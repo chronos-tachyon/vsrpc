@@ -11,10 +11,14 @@ type Handler interface {
 
 type HandlerFunc func(*ServerCall) error
 
+func NoSuchMethod(call *ServerCall) error {
+	method := call.Method()
+	return NoSuchMethodError{Method: method}
+}
+
 func (fn HandlerFunc) Handle(call *ServerCall) error {
 	if fn == nil {
-		method := call.Method()
-		return NoSuchMethodError{Method: method}
+		return NoSuchMethod(call)
 	}
 	return fn(call)
 }
@@ -99,8 +103,7 @@ func (mux *HandlerMux) Handle(call *ServerCall) error {
 		h = mux.Find("*")
 	}
 	if h == nil {
-		method = call.Method()
-		return NoSuchMethodError{Method: method}
+		return NoSuchMethod(call)
 	}
 	return h.Handle(call)
 }

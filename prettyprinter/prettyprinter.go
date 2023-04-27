@@ -12,12 +12,12 @@ type PrettyPrinter interface {
 	PrettyPrintTo(buf []byte, detail *anypb.Any) []byte
 }
 
-type PrettyPrinterRegistry struct {
+type Registry struct {
 	mu sync.Mutex
 	db map[string]PrettyPrinter
 }
 
-func (reg *PrettyPrinterRegistry) Add(typeURL string, pp PrettyPrinter) {
+func (reg *Registry) Add(typeURL string, pp PrettyPrinter) {
 	if reg == nil || pp == nil {
 		return
 	}
@@ -30,7 +30,7 @@ func (reg *PrettyPrinterRegistry) Add(typeURL string, pp PrettyPrinter) {
 	reg.mu.Unlock()
 }
 
-func (reg *PrettyPrinterRegistry) Remove(typeURL string) {
+func (reg *Registry) Remove(typeURL string) {
 	if reg == nil {
 		return
 	}
@@ -42,7 +42,7 @@ func (reg *PrettyPrinterRegistry) Remove(typeURL string) {
 	reg.mu.Unlock()
 }
 
-func (reg *PrettyPrinterRegistry) Find(typeURL string) PrettyPrinter {
+func (reg *Registry) Find(typeURL string) PrettyPrinter {
 	if reg == nil {
 		return nil
 	}
@@ -53,7 +53,7 @@ func (reg *PrettyPrinterRegistry) Find(typeURL string) PrettyPrinter {
 	return pp
 }
 
-func (reg *PrettyPrinterRegistry) PrettyPrintTo(buf []byte, detail *anypb.Any) []byte {
+func (reg *Registry) PrettyPrintTo(buf []byte, detail *anypb.Any) []byte {
 	if detail == nil {
 		return buf
 	}
@@ -75,13 +75,13 @@ func (reg *PrettyPrinterRegistry) PrettyPrintTo(buf []byte, detail *anypb.Any) [
 	return pp.PrettyPrintTo(buf, detail)
 }
 
-var _ PrettyPrinter = (*PrettyPrinterRegistry)(nil)
+var _ PrettyPrinter = (*Registry)(nil)
 
-var Registry atomic.Pointer[PrettyPrinterRegistry]
+var GlobalRegistry atomic.Pointer[Registry]
 
 func PrettyPrintTo(buf []byte, detail *anypb.Any) []byte {
 	if detail == nil {
 		return buf
 	}
-	return Registry.Load().PrettyPrintTo(buf, detail)
+	return GlobalRegistry.Load().PrettyPrintTo(buf, detail)
 }
