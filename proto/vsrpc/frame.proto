@@ -1,0 +1,104 @@
+syntax = "proto3";
+
+package vsrpc;
+
+option go_package = "github.com/chronos-tachyon/vsrpc";
+
+import "google/protobuf/any.proto";
+import "google/protobuf/timestamp.proto";
+import "vsrpc/status.proto";
+
+message Frame {
+  enum Type {
+    // NO_OP denotes a frame that does nothing.
+    //
+    // A NO_OP frame is *not* a ping and does *not* solicit a response.  Both
+    // clients and servers should ignore any NO_OP frames they receive, and
+    // neither clients nor servers should send NO_OP frames under normal
+    // circumstances.
+    //
+    // Direction: any
+    // Required fields: type
+    // Optional fields: NONE
+    NO_OP = 0;
+
+    // SHUTDOWN tells the server that no more BEGIN frames will be sent.
+    //
+    // Direction: client to server
+    // Required fields: type
+    // Optional fields: NONE
+    SHUTDOWN = 1;
+
+    // GO_AWAY tells the client that future BEGIN frames will not be honored,
+    // because the server is shutting down the connection.
+    //
+    // The server may start aborting in-progress RPC calls if they do not
+    // complete quickly enough, or it may close the connection without warning,
+    // with or without sending a GO_AWAY frame.  The client must treat
+    // abandoned RPC calls as having failed with status code ABORTED.
+    //
+    // Direction: server to client
+    // Required fields: type
+    // Optional fields: NONE
+    GO_AWAY = 2;
+
+    // BEGIN creates a new RPC call.
+    //
+    // Direction: client to server
+    // Required fields: type, call_id, method
+    // Optional fields: deadline
+    BEGIN = 3;
+
+    // REQUEST sends a request body for an RPC call.
+    //
+    // Direction: client to server
+    // Required fields: type, call_id, payload
+    // Optional fields: NONE
+    REQUEST = 4;
+
+    // RESPONSE sends a response body for an RPC call.
+    //
+    // It is valid for the server to send RESPONSE frames before the client has
+    // sent HALF_CLOSE; this is how bidirectional streaming works.
+    //
+    // Direction: server to client
+    // Required fields: type, call_id, payload
+    // Optional fields: NONE
+    RESPONSE = 5;
+
+    // HALF_CLOSE tells the server that no more REQUEST frames will be sent for
+    // this RPC call.
+    //
+    // Direction: client to server
+    // Required fields: type, call_id
+    // Optional fields: NONE
+    HALF_CLOSE = 6;
+
+    // CANCEL asks the server to cancel the in-progress RPC call.
+    //
+    // The RPC call remains outstanding until the server sends a END frame.
+    // Status code CANCELLED indicates that the cancellation was accepted.
+    //
+    // Direction: client to server
+    // Required fields: type, call_id
+    // Optional fields: NONE
+    CANCEL = 7;
+
+    // END reports the final status of the RPC call.
+    //
+    // If the client continues to send frames relating to this call, the server
+    // must ignore them; they are NOT a protocol violation.
+    //
+    // Direction: server to client
+    // Required fields: type, call_id, status
+    // Optional fields: NONE
+    END = 8;
+  }
+
+  Type type = 1;
+  uint32 call_id = 2;
+  string method = 3;
+  google.protobuf.Timestamp deadline = 4;
+  google.protobuf.Any payload = 5;
+  Status status = 6;
+}

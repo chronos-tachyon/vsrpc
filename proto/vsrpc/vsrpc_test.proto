@@ -1,0 +1,13 @@
+syntax = "proto3";
+
+package vsrpc;
+
+option go_package = "github.com/chronos-tachyon/vsrpc";
+
+message SumRequest {
+  repeated int32 input = 1;
+}
+
+message SumResponse {
+  int32 output = 1;
+}
