@@ -11,8 +11,8 @@ import (
 type ClientObserver interface {
 	OnDial(c *Client, cc *ClientConn)
 	OnDialError(c *Client, err error)
-	OnShutdown(c *Client)
-	OnClose(c *Client)
+	OnGlobalShutdown(c *Client)
+	OnGlobalClose(c *Client)
 }
 
 type Client struct {
@@ -53,7 +53,7 @@ func (c *Client) AddObserver(o ClientObserver) {
 	defer c.mu.Unlock()
 
 	if c.state >= StateClosed {
-		o.OnClose(c)
+		o.OnGlobalClose(c)
 		return
 	}
 
@@ -62,7 +62,7 @@ func (c *Client) AddObserver(o ClientObserver) {
 	}
 
 	if c.state >= StateShuttingDown {
-		o.OnShutdown(c)
+		o.OnGlobalShutdown(c)
 	}
 
 	if c.observers == nil {
@@ -155,7 +155,7 @@ func (c *Client) Shutdown(ctx context.Context) error {
 	}
 
 	for o := range c.observers {
-		neverPanic(func() { o.OnShutdown(c) })
+		neverPanic(func() { o.OnGlobalShutdown(c) })
 	}
 
 	var errs []error
@@ -182,7 +182,7 @@ func (c *Client) Close() error {
 	}
 
 	for o := range c.observers {
-		neverPanic(func() { o.OnClose(c) })
+		neverPanic(func() { o.OnGlobalClose(c) })
 	}
 
 	var errs []error
@@ -229,8 +229,8 @@ type ClientNoOpObserver struct{}
 
 func (ClientNoOpObserver) OnDial(c *Client, cc *ClientConn) {}
 func (ClientNoOpObserver) OnDialError(c *Client, err error) {}
-func (ClientNoOpObserver) OnShutdown(c *Client)             {}
-func (ClientNoOpObserver) OnClose(c *Client)                {}
+func (ClientNoOpObserver) OnGlobalShutdown(c *Client)       {}
+func (ClientNoOpObserver) OnGlobalClose(c *Client)          {}
 
 var _ ClientObserver = ClientNoOpObserver{}
 
@@ -253,13 +253,13 @@ func (o ClientFuncObserver) OnDialError(c *Client, err error) {
 	}
 }
 
-func (o ClientFuncObserver) OnShutdown(c *Client) {
+func (o ClientFuncObserver) OnGlobalShutdown(c *Client) {
 	if o.Shutdown != nil {
 		o.Shutdown(c)
 	}
 }
 
-func (o ClientFuncObserver) OnClose(c *Client) {
+func (o ClientFuncObserver) OnGlobalClose(c *Client) {
 	if o.Close != nil {
 		o.Close(c)
 	}
