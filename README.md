@@ -1,2 +1,3 @@
-# vsrpc
-[WIP] A simple RPC framework using Protocol Buffers
+# Very Simple RPC
+
+An extensible RPC framework using Protocol Buffers.
