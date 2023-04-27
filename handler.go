@@ -3,96 +3,71 @@ package vsrpc
 import (
 	"strings"
 	"sync"
-
-	"github.com/chronos-tachyon/assert"
 )
 
 type Handler interface {
-	Accept(*ServerCall) error
+	Handle(*ServerCall) error
 }
 
 type HandlerFunc func(*ServerCall) error
 
-func (h HandlerFunc) Accept(call *ServerCall) error {
-	if h == nil {
+func (fn HandlerFunc) Handle(call *ServerCall) error {
+	if fn == nil {
 		method := call.Method()
 		return NoSuchMethodError{Method: method}
 	}
-	return h(call)
+	return fn(call)
 }
+
+var _ Handler = HandlerFunc(nil)
 
 type HandlerMux struct {
-	mu       sync.Mutex
-	handlers map[string]Handler
+	mu sync.Mutex
+	db map[string]Handler
 }
 
-func (mux *HandlerMux) AddFunc(method string, fn func(*ServerCall) error) {
-	mux.Add(method, HandlerFunc(fn))
-}
-
-func (mux *HandlerMux) Add(method string, h Handler) {
-	assert.NotNil(&h)
-
-	if mux == nil {
-		return
-	}
-
+func (mux *HandlerMux) Reset() {
 	mux.mu.Lock()
-	if mux.handlers == nil {
-		mux.handlers = make(map[string]Handler, 64)
-	}
-	mux.handlers[method] = h
-	mux.mu.Unlock()
-}
-
-func (mux *HandlerMux) AddAll(m map[string]Handler) {
-	if mux == nil {
-		return
-	}
-
-	mLen := len(m)
-	if mLen <= 0 {
-		return
-	}
-
-	mux.mu.Lock()
-	if mux.handlers == nil {
-		if mLen < 64 {
-			mLen = 64
+	if mux.db != nil {
+		for method := range mux.db {
+			delete(mux.db, method)
 		}
-		mux.handlers = make(map[string]Handler, mLen)
-	}
-	for method, h := range m {
-		mux.handlers[method] = h
 	}
 	mux.mu.Unlock()
 }
 
-func (mux *HandlerMux) Remove(method string) {
-	if mux == nil {
+func (mux *HandlerMux) AddFunc(fn func(*ServerCall) error, methods ...string) {
+	mux.Add(HandlerFunc(fn), methods...)
+}
+
+func (mux *HandlerMux) Add(h Handler, methods ...string) {
+	if mux == nil || len(methods) <= 0 {
 		return
 	}
 
+	if h == nil {
+		h = HandlerFunc(nil)
+	}
+
 	mux.mu.Lock()
-	if mux.handlers != nil {
-		delete(mux.handlers, method)
+	if mux.db == nil {
+		mux.db = make(map[string]Handler, 64)
+	}
+	for _, method := range methods {
+		mux.db[method] = h
 	}
 	mux.mu.Unlock()
 }
 
-func (mux *HandlerMux) RemoveAll(methods []string) {
-	if mux == nil {
-		return
-	}
-
-	if len(methods) <= 0 {
+func (mux *HandlerMux) Remove(methods ...string) {
+	if mux == nil || len(methods) <= 0 {
 		return
 	}
 
 	mux.mu.Lock()
-	if mux.handlers != nil {
+	if mux.db != nil {
 		for _, method := range methods {
-			delete(mux.handlers, method)
+			delete(mux.db, method)
 		}
 	}
 	mux.mu.Unlock()
@@ -104,12 +79,12 @@ func (mux *HandlerMux) Find(method string) Handler {
 	}
 
 	mux.mu.Lock()
-	h := mux.handlers[method]
+	h := mux.db[method]
 	mux.mu.Unlock()
 	return h
 }
 
-func (mux *HandlerMux) Accept(call *ServerCall) error {
+func (mux *HandlerMux) Handle(call *ServerCall) error {
 	method := call.Method()
 	h := mux.Find(method)
 	for h == nil {
@@ -127,7 +102,7 @@ func (mux *HandlerMux) Accept(call *ServerCall) error {
 		method = call.Method()
 		return NoSuchMethodError{Method: method}
 	}
-	return h.Accept(call)
+	return h.Handle(call)
 }
 
 var _ Handler = (*HandlerMux)(nil)

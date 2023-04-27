@@ -283,7 +283,7 @@ func (sc *ServerConn) gotBegin(id uint32, method string) bool {
 	call := newServerCall(sc, id, method)
 	h := sc.s.h
 	go func() {
-		err := h.Accept(call)
+		err := h.Handle(call)
 		_ = call.End(StatusFromError(err))
 	}()
 

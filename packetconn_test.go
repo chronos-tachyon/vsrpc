@@ -176,7 +176,7 @@ func CaseUnexpected(ctx context.Context, t *testing.T, cc *ClientConn) error {
 	if expect := Status_PERMISSION_DENIED; status.Code != expect {
 		return fmt.Errorf("wrong status code: expected %v, got %v", expect, status.Code)
 	}
-	if expect := "foo.* is not permitted"; status.Text != expect {
+	if expect := "permission denied for method \"foo.Unexpected\""; status.Text != expect {
 		return fmt.Errorf("wrong status text: expected %q, got %q", expect, status.Text)
 	}
 	return nil
@@ -207,45 +207,54 @@ func CaseBogus(ctx context.Context, t *testing.T, cc *ClientConn) error {
 	return nil
 }
 
+func HandleAlwaysOK(call *ServerCall) error {
+	return nil
+}
+
+func HandleSum(call *ServerCall) error {
+	var queue []*anypb.Any
+	var done bool
+	for !done {
+		call.WaitRecv(1)
+		queue, done = call.Recv()
+		for _, reqAny := range queue {
+			var req SumRequest
+			if err := UnmarshalFromAny(&req, reqAny); err != nil {
+				return err
+			}
+
+			var resp SumResponse
+			for _, i32 := range req.Input {
+				resp.Output += i32
+			}
+
+			_ = call.SendMessage(&resp)
+		}
+	}
+	return nil
+}
+
+func HandleForbidden(call *ServerCall) error {
+	method := call.Method()
+	return StatusError{
+		Status: &Status{
+			Code: Status_PERMISSION_DENIED,
+			Text: fmt.Sprintf("permission denied for method %q", method),
+		},
+	}
+}
+
+func HandleNoSuchMethod(call *ServerCall) error {
+	method := call.Method()
+	return NoSuchMethodError{Method: method}
+}
+
 func NewTestMux() *HandlerMux {
 	mux := &HandlerMux{}
-	mux.AddFunc("foo.AlwaysOK", func(call *ServerCall) error {
-		return nil
-	})
-	mux.AddFunc("foo.Sum", func(call *ServerCall) error {
-		var queue []*anypb.Any
-		var done bool
-		for !done {
-			call.WaitRecv(1)
-			queue, done = call.Recv()
-			for _, reqAny := range queue {
-				var req SumRequest
-				if err := UnmarshalFromAny(&req, reqAny); err != nil {
-					return err
-				}
-
-				var resp SumResponse
-				for _, i32 := range req.Input {
-					resp.Output += i32
-				}
-
-				_ = call.SendMessage(&resp)
-			}
-		}
-		return nil
-	})
-	mux.AddFunc("foo.*", func(call *ServerCall) error {
-		return StatusError{
-			Status: &Status{
-				Code: Status_PERMISSION_DENIED,
-				Text: "foo.* is not permitted",
-			},
-		}
-	})
-	mux.AddFunc("*", func(call *ServerCall) error {
-		method := call.Method()
-		return NoSuchMethodError{Method: method}
-	})
+	mux.AddFunc(HandleAlwaysOK, "foo.AlwaysOK")
+	mux.AddFunc(HandleSum, "foo.Sum")
+	mux.AddFunc(HandleForbidden, "foo.*")
+	mux.AddFunc(HandleNoSuchMethod, "*")
 	return mux
 }
 
