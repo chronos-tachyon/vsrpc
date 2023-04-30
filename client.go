@@ -2,267 +2,165 @@ package vsrpc
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"sync"
 
 	"github.com/chronos-tachyon/assert"
 )
 
-type ClientObserver interface {
-	OnDial(c *Client, cc *ClientConn)
-	OnDialError(c *Client, err error)
-	OnGlobalShutdown(c *Client)
-	OnGlobalClose(c *Client)
-}
-
 type Client struct {
-	pd PacketDialer
+	options   []Option
+	observers []Observer
+	pd        PacketDialer
 
-	mu        sync.Mutex
-	conns     map[*ClientConn]void
-	observers map[ClientObserver]void
-	state     State
+	mu    sync.Mutex
+	conns map[*Conn]void
+	state State
 }
 
-func NewClient(pd PacketDialer) *Client {
-	if pd == nil {
-		return nil
+func NewClient(pd PacketDialer, options ...Option) *Client {
+	options = ConcatOptions(nil, options...)
+	c := &Client{options: options, pd: pd}
+	for _, opt := range options {
+		opt.applyToClient(c)
 	}
-
-	c := &Client{pd: pd}
 	return c
 }
 
-func (c *Client) isValid() bool {
-	return c != nil && c.pd != nil
-}
-
 func (c *Client) Dialer() PacketDialer {
-	if !c.isValid() {
+	if c == nil {
 		return nil
 	}
 	return c.pd
 }
 
-func (c *Client) AddObserver(o ClientObserver) {
-	if o == nil || !c.isValid() {
-		return
-	}
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.state >= StateClosed {
-		o.OnGlobalClose(c)
-		return
-	}
-
-	for cc := range c.conns {
-		o.OnDial(c, cc)
-	}
-
-	if c.state >= StateShuttingDown {
-		o.OnGlobalShutdown(c)
-	}
-
-	if c.observers == nil {
-		c.observers = make(map[ClientObserver]void, 16)
-	}
-	c.observers[o] = void{}
-}
-
-func (c *Client) RemoveObserver(o ClientObserver) {
-	if o == nil || !c.isValid() {
-		return
-	}
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.observers != nil {
-		delete(c.observers, o)
-	}
-}
-
-func (c *Client) Dial(ctx context.Context, addr net.Addr) (*ClientConn, error) {
+func (c *Client) Dial(ctx context.Context, addr net.Addr, options ...Option) (*Conn, error) {
 	assert.NotNil(&ctx)
 	assert.NotNil(&addr)
 
-	if !c.isValid() {
-		return nil, ErrClosed
+	if c == nil {
+		return nil, ErrClientClosed
 	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	if c.state >= StateClosed {
-		return nil, ErrClosed
+		return nil, ErrClientClosed
 	}
 
 	if c.state >= StateShuttingDown {
 		return nil, ErrClientClosing
 	}
 
-	pc, err := c.pd.DialPacket(ctx, addr)
+	pd := c.pd
+	if pd == nil {
+		pd = DefaultPacketDialer
+	}
+	if pd == nil {
+		panic(fmt.Errorf("vsrpc.DefaultPacketDialer is nil"))
+	}
+
+	pc, err := pd.DialPacket(ctx, addr)
 	if err != nil {
-		for o := range c.observers {
-			neverPanic(func() { o.OnDialError(c, err) })
-		}
+		onDialError(c.observers, err)
 		return nil, err
 	}
 
-	return c.lockedDial(ctx, pc)
+	return c.lockedDial(pc, options)
 }
 
-func (c *Client) DialExisting(ctx context.Context, pc PacketConn) (*ClientConn, error) {
-	assert.NotNil(&ctx)
+func (c *Client) DialExisting(pc PacketConn, options ...Option) (*Conn, error) {
 	assert.NotNil(&pc)
 
-	if !c.isValid() {
-		return nil, ErrClosed
+	if c == nil {
+		return nil, ErrClientClosed
 	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	if c.state >= StateClosed {
-		return nil, ErrClosed
+		return nil, ErrClientClosed
 	}
 
 	if c.state >= StateShuttingDown {
 		return nil, ErrClientClosing
 	}
 
-	return c.lockedDial(ctx, pc)
+	return c.lockedDial(pc, options)
 }
 
 func (c *Client) Shutdown(ctx context.Context) error {
 	assert.NotNil(&ctx)
 
-	if !c.isValid() {
-		return ErrClosed
+	if c == nil {
+		return ErrClientClosed
 	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	if c.state >= StateClosed {
-		return ErrClosed
+		return ErrClientClosed
 	}
 
 	if c.state >= StateShuttingDown {
 		return nil
 	}
 
-	for o := range c.observers {
-		neverPanic(func() { o.OnGlobalShutdown(c) })
-	}
-
-	var errs []error
-	for cc := range c.conns {
-		if err := cc.Shutdown(ctx); err != nil {
-			errs = append(errs, err)
-		}
-	}
+	onGlobalShutdown(c.observers)
 
 	c.state = StateShuttingDown
-	return joinErrors(errs)
+	for conn := range c.conns {
+		_ = conn.Shutdown(ctx)
+	}
+	return nil
 }
 
 func (c *Client) Close() error {
-	if !c.isValid() {
-		return ErrClosed
+	if c == nil {
+		return ErrClientClosed
 	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	if c.state >= StateClosed {
-		return ErrClosed
+		return ErrClientClosed
 	}
 
-	for o := range c.observers {
-		neverPanic(func() { o.OnGlobalClose(c) })
-	}
-
-	var errs []error
-	for cc := range c.conns {
-		if err := cc.Close(); err != nil {
-			errs = append(errs, err)
-		}
-	}
+	onGlobalClose(c.observers)
 
 	c.state = StateClosed
+	for conn := range c.conns {
+		_ = conn.Close()
+	}
 	c.conns = nil
-	c.observers = nil
-	return joinErrors(errs)
+	return nil
 }
 
-func (c *Client) forgetConn(cc *ClientConn) {
-	if cc == nil || !c.isValid() {
+func (c *Client) forgetConn(conn *Conn) {
+	if c == nil || conn == nil {
 		return
 	}
 
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	if c.conns != nil {
-		delete(c.conns, cc)
+		delete(c.conns, conn)
 	}
+	c.mu.Unlock()
 }
 
-func (c *Client) lockedDial(ctx context.Context, pc PacketConn) (*ClientConn, error) {
-	cc := newClientConn(pc, c)
-
-	for o := range c.observers {
-		neverPanic(func() { o.OnDial(c, cc) })
-	}
-
+func (c *Client) lockedDial(pc PacketConn, options []Option) (*Conn, error) {
+	options = ConcatOptions(c.options, options...)
+	conn := newConn(ClientRole, c, nil, pc, options)
 	if c.conns == nil {
-		c.conns = make(map[*ClientConn]void, 16)
+		c.conns = make(map[*Conn]void, 16)
 	}
-	c.conns[cc] = void{}
-	return cc, nil
+	c.conns[conn] = void{}
+	onDial(c.observers, conn)
+	conn.start()
+	return conn, nil
 }
-
-type ClientNoOpObserver struct{}
-
-func (ClientNoOpObserver) OnDial(c *Client, cc *ClientConn) {}
-func (ClientNoOpObserver) OnDialError(c *Client, err error) {}
-func (ClientNoOpObserver) OnGlobalShutdown(c *Client)       {}
-func (ClientNoOpObserver) OnGlobalClose(c *Client)          {}
-
-var _ ClientObserver = ClientNoOpObserver{}
-
-type ClientFuncObserver struct {
-	Dial      func(c *Client, cc *ClientConn)
-	DialError func(c *Client, err error)
-	Shutdown  func(c *Client)
-	Close     func(c *Client)
-}
-
-func (o ClientFuncObserver) OnDial(c *Client, cc *ClientConn) {
-	if o.Dial != nil {
-		o.Dial(c, cc)
-	}
-}
-
-func (o ClientFuncObserver) OnDialError(c *Client, err error) {
-	if o.DialError != nil {
-		o.DialError(c, err)
-	}
-}
-
-func (o ClientFuncObserver) OnGlobalShutdown(c *Client) {
-	if o.Shutdown != nil {
-		o.Shutdown(c)
-	}
-}
-
-func (o ClientFuncObserver) OnGlobalClose(c *Client) {
-	if o.Close != nil {
-		o.Close(c)
-	}
-}
-
-var _ ClientObserver = ClientFuncObserver{}

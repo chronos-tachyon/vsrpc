@@ -9,9 +9,9 @@ import (
 	"github.com/chronos-tachyon/vsrpc/bufferpool"
 )
 
-const DefaultMaxPacketSize = (1 << 24)
+const DefaultUnixMaxPacketSize = (1 << 24)
 
-type NetworkPacketDialer struct {
+type UnixPacketDialer struct {
 	Dialer               *net.Dialer
 	ListenConfig         *net.ListenConfig
 	Now                  func() time.Time
@@ -25,7 +25,7 @@ type NetworkPacketDialer struct {
 	UnlinkOnClose        bool
 }
 
-func (pd *NetworkPacketDialer) DialPacket(ctx context.Context, addr net.Addr) (PacketConn, error) {
+func (pd *UnixPacketDialer) DialPacket(ctx context.Context, addr net.Addr) (PacketConn, error) {
 	var zeroDialer net.Dialer
 	dialer := &zeroDialer
 	if pd != nil && pd.Dialer != nil {
@@ -37,7 +37,7 @@ func (pd *NetworkPacketDialer) DialPacket(ctx context.Context, addr net.Addr) (P
 		return nil, err
 	}
 
-	pc := &NetworkPacketConn{Conn: conn}
+	pc := &UnixPacketConn{Conn: conn}
 	if pd != nil {
 		pc.Now = pd.Now
 		pc.MaxPacketSize = pd.MaxPacketSize
@@ -49,7 +49,7 @@ func (pd *NetworkPacketDialer) DialPacket(ctx context.Context, addr net.Addr) (P
 	return pc, nil
 }
 
-func (pd *NetworkPacketDialer) ListenPacket(ctx context.Context, addr net.Addr) (PacketListener, error) {
+func (pd *UnixPacketDialer) ListenPacket(ctx context.Context, addr net.Addr) (PacketListener, error) {
 	var zeroConfig net.ListenConfig
 	config := &zeroConfig
 	if pd != nil && pd.ListenConfig != nil {
@@ -67,7 +67,7 @@ func (pd *NetworkPacketDialer) ListenPacket(ctx context.Context, addr net.Addr) 
 		}
 	}
 
-	pl := &NetworkPacketListener{Listener: listener}
+	pl := &UnixPacketListener{Listener: listener}
 	if pd != nil {
 		pl.Now = pd.Now
 		pl.MaxPacketSize = pd.MaxPacketSize
@@ -81,9 +81,9 @@ func (pd *NetworkPacketDialer) ListenPacket(ctx context.Context, addr net.Addr) 
 	return pl, nil
 }
 
-var _ PacketDialer = (*NetworkPacketDialer)(nil)
+var _ PacketDialer = (*UnixPacketDialer)(nil)
 
-type NetworkPacketListener struct {
+type UnixPacketListener struct {
 	Listener             net.Listener
 	Now                  func() time.Time
 	MaxPacketSize        uint
@@ -95,7 +95,7 @@ type NetworkPacketListener struct {
 	WriteTimeoutEnabled  bool
 }
 
-func (pl *NetworkPacketListener) AcceptPacket(ctx context.Context) (pc PacketConn, err error) {
+func (pl *UnixPacketListener) AcceptPacket(ctx context.Context) (pc PacketConn, err error) {
 	if pl == nil || pl.Listener == nil {
 		return nil, ErrClosed
 	}
@@ -130,7 +130,7 @@ func (pl *NetworkPacketListener) AcceptPacket(ctx context.Context) (pc PacketCon
 			return err
 		}
 
-		pc = &NetworkPacketConn{
+		pc = &UnixPacketConn{
 			Conn:                conn,
 			Now:                 pl.Now,
 			MaxPacketSize:       pl.MaxPacketSize,
@@ -144,21 +144,21 @@ func (pl *NetworkPacketListener) AcceptPacket(ctx context.Context) (pc PacketCon
 	return
 }
 
-func (pl *NetworkPacketListener) Addr() net.Addr {
+func (pl *UnixPacketListener) Addr() net.Addr {
 	if pl == nil || pl.Listener == nil {
 		return nil
 	}
 	return pl.Listener.Addr()
 }
 
-func (pl *NetworkPacketListener) Close() error {
+func (pl *UnixPacketListener) Close() error {
 	if pl == nil || pl.Listener == nil {
 		return nil
 	}
 	return pl.Listener.Close()
 }
 
-func (pl *NetworkPacketListener) now() time.Time {
+func (pl *UnixPacketListener) now() time.Time {
 	var fn func() time.Time = time.Now
 	if pl != nil && pl.Now != nil {
 		fn = pl.Now
@@ -166,9 +166,9 @@ func (pl *NetworkPacketListener) now() time.Time {
 	return fn()
 }
 
-var _ PacketListener = (*NetworkPacketListener)(nil)
+var _ PacketListener = (*UnixPacketListener)(nil)
 
-type NetworkPacketConn struct {
+type UnixPacketConn struct {
 	Conn                net.Conn
 	Now                 func() time.Time
 	MaxPacketSize       uint
@@ -178,7 +178,7 @@ type NetworkPacketConn struct {
 	WriteTimeoutEnabled bool
 }
 
-func (pc *NetworkPacketConn) ReadPacket(ctx context.Context) (packet []byte, dispose func(), err error) {
+func (pc *UnixPacketConn) ReadPacket(ctx context.Context) (packet []byte, dispose func(), err error) {
 	assert.NotNil(&ctx)
 
 	if pc == nil || pc.Conn == nil {
@@ -203,7 +203,7 @@ func (pc *NetworkPacketConn) ReadPacket(ctx context.Context) (packet []byte, dis
 
 	size := pc.MaxPacketSize
 	if size == 0 {
-		size = DefaultMaxPacketSize
+		size = DefaultUnixMaxPacketSize
 	}
 
 	buffer := bufferpool.Allocate(size)
@@ -222,7 +222,7 @@ func (pc *NetworkPacketConn) ReadPacket(ctx context.Context) (packet []byte, dis
 	return
 }
 
-func (pc *NetworkPacketConn) WritePacket(ctx context.Context, packet []byte) error {
+func (pc *UnixPacketConn) WritePacket(ctx context.Context, packet []byte) error {
 	assert.NotNil(&ctx)
 
 	if pc == nil || pc.Conn == nil {
@@ -253,28 +253,28 @@ func (pc *NetworkPacketConn) WritePacket(ctx context.Context, packet []byte) err
 	})
 }
 
-func (pc *NetworkPacketConn) LocalAddr() net.Addr {
+func (pc *UnixPacketConn) LocalAddr() net.Addr {
 	if pc == nil || pc.Conn == nil {
 		return nil
 	}
 	return pc.Conn.LocalAddr()
 }
 
-func (pc *NetworkPacketConn) RemoteAddr() net.Addr {
+func (pc *UnixPacketConn) RemoteAddr() net.Addr {
 	if pc == nil || pc.Conn == nil {
 		return nil
 	}
 	return pc.Conn.RemoteAddr()
 }
 
-func (pc *NetworkPacketConn) Close() error {
+func (pc *UnixPacketConn) Close() error {
 	if pc == nil || pc.Conn == nil {
 		return ErrClosed
 	}
 	return pc.Conn.Close()
 }
 
-func (pc *NetworkPacketConn) now() time.Time {
+func (pc *UnixPacketConn) now() time.Time {
 	var fn func() time.Time = time.Now
 	if pc != nil && pc.Now != nil {
 		fn = pc.Now
@@ -282,4 +282,4 @@ func (pc *NetworkPacketConn) now() time.Time {
 	return fn()
 }
 
-var _ PacketConn = (*NetworkPacketConn)(nil)
+var _ PacketConn = (*UnixPacketConn)(nil)

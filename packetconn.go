@@ -6,6 +6,8 @@ import (
 	"net"
 )
 
+var DefaultPacketDialer PacketDialer
+
 type PacketDialer interface {
 	DialPacket(ctx context.Context, addr net.Addr) (PacketConn, error)
 	ListenPacket(ctx context.Context, addr net.Addr) (PacketListener, error)

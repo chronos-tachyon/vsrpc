@@ -1,0 +1,27 @@
+syntax = "proto3";
+
+package vsrpc;
+
+option go_package = "github.com/chronos-tachyon/vsrpc/example";
+
+import "google/protobuf/empty.proto";
+
+service ExampleApi {
+  rpc ZeroInZeroOut (google.protobuf.Empty) returns (google.protobuf.Empty);
+  rpc ZeroInOneOut  (google.protobuf.Empty) returns (ExampleResponse);
+  rpc ZeroInManyOut (google.protobuf.Empty) returns (stream ExampleResponse);
+
+  rpc OneInZeroOut (ExampleRequest) returns (google.protobuf.Empty);
+  rpc OneInOneOut  (ExampleRequest) returns (ExampleResponse);
+  rpc OneInManyOut (ExampleRequest) returns (stream ExampleResponse);
+
+  rpc ManyInZeroOut (stream ExampleRequest) returns (google.protobuf.Empty);
+  rpc ManyInOneOut  (stream ExampleRequest) returns (ExampleResponse);
+  rpc ManyInManyOut (stream ExampleRequest) returns (stream ExampleResponse);
+}
+
+message ExampleRequest {
+}
+
+message ExampleResponse {
+}

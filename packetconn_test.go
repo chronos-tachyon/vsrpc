@@ -6,14 +6,173 @@ import (
 	"net"
 	"testing"
 	"time"
-
-	"google.golang.org/protobuf/proto"
-	anypb "google.golang.org/protobuf/types/known/anypb"
 )
+
+const (
+	FooServer_AlwaysOK  Method = "foo.AlwaysOK"
+	FooServer_Sum       Method = "foo.Sum"
+	FooServer_Missing   Method = "foo.Missing"
+	FooServer_Forbidden Method = "bar.Forbidden"
+)
+
+type FooClient interface {
+	AlwaysOK(ctx context.Context, options ...Option) error
+	Sum(ctx context.Context, fn func(stream BiStream[*SumRequest, *SumResponse]) error, options ...Option) error
+	Missing(ctx context.Context, options ...Option) error
+	Forbidden(ctx context.Context, options ...Option) error
+}
+
+type FooClientImpl struct {
+	Conn *Conn
+}
+
+func (c FooClientImpl) AlwaysOK(ctx context.Context, options ...Option) error {
+	call, err := c.Conn.Begin(ctx, FooServer_AlwaysOK, options...)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = call.Close() }()
+
+	err = call.CloseSend()
+	if err != nil {
+		return err
+	}
+
+	return call.Wait().AsError()
+}
+
+func (c FooClientImpl) Sum(ctx context.Context, fn func(stream BiStream[*SumRequest, *SumResponse]) error, options ...Option) error {
+	call, err := c.Conn.Begin(ctx, FooServer_Sum, options...)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = call.Close() }()
+
+	stream := NewBiStream[*SumRequest, *SumResponse](call)
+	err = fn(stream)
+	if err != nil {
+		return err
+	}
+
+	err = call.CloseSend()
+	if err != nil {
+		return err
+	}
+
+	return call.Wait().AsError()
+}
+
+func (c FooClientImpl) Missing(ctx context.Context, options ...Option) error {
+	call, err := c.Conn.Begin(ctx, FooServer_Missing, options...)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = call.Close() }()
+
+	err = call.CloseSend()
+	if err != nil {
+		return err
+	}
+
+	return call.Wait().AsError()
+}
+
+func (c FooClientImpl) Forbidden(ctx context.Context, options ...Option) error {
+	call, err := c.Conn.Begin(ctx, FooServer_Forbidden, options...)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = call.Close() }()
+
+	err = call.CloseSend()
+	if err != nil {
+		return err
+	}
+
+	return call.Wait().AsError()
+}
+
+var _ FooClient = FooClientImpl{}
+
+type FooServer interface {
+	AlwaysOK(ctx context.Context) error
+	Sum(ctx context.Context, stream BiStream[*SumResponse, *SumRequest]) error
+}
+
+type FooHandler struct {
+	Impl FooServer
+}
+
+func (h FooHandler) Handle(call *Call) error {
+	ctx := call.Context()
+	method := call.Method()
+
+	if h.Impl == nil {
+		return NoSuchMethodError{Method: method}
+	}
+
+	switch method {
+	case FooServer_AlwaysOK:
+		if err := h.Impl.AlwaysOK(ctx); err != nil {
+			return err
+		}
+
+	case FooServer_Sum:
+		stream := NewBiStream[*SumResponse, *SumRequest](call)
+		if err := h.Impl.Sum(ctx, stream); err != nil {
+			return err
+		}
+
+	default:
+		return NoSuchMethodError{Method: method}
+	}
+	return nil
+}
+
+var _ Handler = FooHandler{}
+
+type ForbiddenHandler struct{}
+
+func (h ForbiddenHandler) Handle(call *Call) error {
+	status := &Status{
+		Code: Status_PERMISSION_DENIED,
+		Text: fmt.Sprintf("permission denied for method %q", call.Method()),
+	}
+	return status.AsError()
+}
+
+var _ Handler = ForbiddenHandler{}
+
+type FooServerImpl struct{}
+
+func (FooServerImpl) AlwaysOK(ctx context.Context) error {
+	return nil
+}
+
+func (FooServerImpl) Sum(ctx context.Context, stream BiStream[*SumResponse, *SumRequest]) error {
+	var req SumRequest
+	var resp SumResponse
+	var err error
+	done := false
+	for err == nil && !done {
+		var ok bool
+		ok, done, err = stream.Recv(true, &req)
+		if err == nil && ok {
+			resp.Reset()
+			for _, i32 := range req.Input {
+				resp.Output += i32
+			}
+			err = stream.Send(&resp)
+		}
+	}
+	return err
+}
+
+var _ FooServer = FooServerImpl{}
 
 type Case struct {
 	Name       string
-	Func       func(ctx context.Context, t *testing.T, cc *ClientConn) error
+	Func       func(ctx context.Context, t *testing.T, c FooClient) error
 	Timeout    time.Duration
 	HasTimeout bool
 }
@@ -23,238 +182,128 @@ var Cases = []Case{
 	{"SumNone", CaseSumNone, 0, false},
 	{"SumOne", CaseSumOne, 0, false},
 	{"SumThree", CaseSumThree, 0, false},
-	{"Unexpected", CaseUnexpected, 0, false},
-	{"Bogus", CaseBogus, 0, false},
+	{"Missing", CaseMissing, 0, false},
+	{"Forbidden", CaseForbidden, 0, false},
 }
 
-func MustUnmarshal(out proto.Message, in *anypb.Any) {
-	if err := UnmarshalFromAny(out, in); err != nil {
-		panic(err)
-	}
+func CaseAlwaysOK(ctx context.Context, t *testing.T, c FooClient) error {
+	return c.AlwaysOK(ctx)
 }
 
-func CaseAlwaysOK(ctx context.Context, t *testing.T, cc *ClientConn) error {
-	call, err := cc.Call(ctx, "foo.AlwaysOK")
-	if err != nil {
-		return err
-	}
-	defer call.Close()
-
-	err = call.CloseSend()
-	if err != nil {
-		return err
-	}
-
-	return call.Wait().AsError()
+func CaseSumNone(ctx context.Context, t *testing.T, c FooClient) error {
+	return c.Sum(ctx, func(stream BiStream[*SumRequest, *SumResponse]) error {
+		return nil
+	})
 }
 
-func CaseSumNone(ctx context.Context, t *testing.T, cc *ClientConn) error {
-	call, err := cc.Call(ctx, "foo.Sum")
-	if err != nil {
-		return err
-	}
-	defer call.Close()
+func CaseSumOne(ctx context.Context, t *testing.T, c FooClient) error {
+	return c.Sum(ctx, func(stream BiStream[*SumRequest, *SumResponse]) error {
+		var req SumRequest
+		var resp SumResponse
 
-	err = call.CloseSend()
-	if err != nil {
-		return err
-	}
+		req.Input = []int32{1, 2, 3, 4, 5}
+		err := stream.Send(&req)
+		if err != nil {
+			return err
+		}
 
-	return call.Wait().AsError()
+		ok, _, err := stream.Recv(true, &resp)
+		if err != nil {
+			return err
+		}
+		if !ok || resp.Output != 15 {
+			return fmt.Errorf("expected ok = true && output = 15, got ok = %t && output = %d", ok, resp.Output)
+		}
+
+		return nil
+	})
 }
 
-func CaseSumOne(ctx context.Context, t *testing.T, cc *ClientConn) error {
-	var req SumRequest
-	var resp SumResponse
+func CaseSumThree(ctx context.Context, t *testing.T, c FooClient) error {
+	return c.Sum(ctx, func(stream BiStream[*SumRequest, *SumResponse]) error {
+		var req SumRequest
+		var resp SumResponse
 
-	call, err := cc.Call(ctx, "foo.Sum")
-	if err != nil {
-		return err
-	}
-	defer call.Close()
+		req.Input = []int32{1, 2, 3, 4, 5}
+		err := stream.Send(&req)
+		if err != nil {
+			return err
+		}
 
-	req.Input = []int32{1, 2, 3, 4, 5}
-	err = call.SendMessage(&req)
-	if err != nil {
-		return err
-	}
+		ok, _, err := stream.Recv(true, &resp)
+		if err != nil {
+			return err
+		}
+		if !ok || resp.Output != 15 {
+			return fmt.Errorf("expected ok = true && output = 15, got ok = %t && output = %d", ok, resp.Output)
+		}
 
-	call.WaitRecv(1)
-	queue, _ := call.Recv()
+		req.Input = []int32{2, 3}
+		err = stream.Send(&req)
+		if err != nil {
+			return err
+		}
 
-	if len(queue) != 1 {
-		return fmt.Errorf("expected len(queue) = 1, got len(queue) = %d", len(queue))
-	}
+		ok, _, err = stream.Recv(true, &resp)
+		if err != nil {
+			return err
+		}
+		if !ok || resp.Output != 5 {
+			return fmt.Errorf("expected ok = true && output = 5, got ok = %t && output = %d", ok, resp.Output)
+		}
 
-	MustUnmarshal(&resp, queue[0])
-	if resp.Output != 15 {
-		return fmt.Errorf("expected output = 15, got output = %d", resp.Output)
-	}
+		req.Input = []int32{}
+		err = stream.Send(&req)
+		if err != nil {
+			return err
+		}
 
-	err = call.CloseSend()
-	if err != nil {
-		return err
-	}
+		ok, _, err = stream.Recv(true, &resp)
+		if err != nil {
+			return err
+		}
+		if !ok || resp.Output != 0 {
+			return fmt.Errorf("expected ok = true && output = 0, got ok = %t && output = %d", ok, resp.Output)
+		}
 
-	return call.Wait().AsError()
+		return nil
+	})
 }
 
-func CaseSumThree(ctx context.Context, t *testing.T, cc *ClientConn) error {
-	var req SumRequest
-	var resp SumResponse
-
-	call, err := cc.Call(ctx, "foo.Sum")
-	if err != nil {
-		return err
-	}
-	defer call.Close()
-
-	req.Input = []int32{1, 2, 3, 4, 5}
-	err = call.SendMessage(&req)
-	if err != nil {
-		return err
-	}
-
-	req.Input = []int32{2, 3}
-	err = call.SendMessage(&req)
-	if err != nil {
-		return err
-	}
-
-	req.Input = []int32{}
-	err = call.SendMessage(&req)
-	if err != nil {
-		return err
-	}
-
-	call.WaitRecv(3)
-	queue, _ := call.Recv()
-
-	if len(queue) != 3 {
-		return fmt.Errorf("expected len(queue) = 3, got len(queue) = %d", len(queue))
-	}
-
-	MustUnmarshal(&resp, queue[0])
-	if resp.Output != 15 {
-		return fmt.Errorf("expected output = 15, got output = %d", resp.Output)
-	}
-
-	MustUnmarshal(&resp, queue[1])
-	if resp.Output != 5 {
-		return fmt.Errorf("expected output = 5, got output = %d", resp.Output)
-	}
-
-	MustUnmarshal(&resp, queue[2])
-	if resp.Output != 0 {
-		return fmt.Errorf("expected output = 0, got output = %d", resp.Output)
-	}
-
-	err = call.CloseSend()
-	if err != nil {
-		return err
-	}
-
-	return call.Wait().AsError()
-}
-
-func CaseUnexpected(ctx context.Context, t *testing.T, cc *ClientConn) error {
-	call, err := cc.Call(ctx, "foo.Unexpected")
-	if err != nil {
-		return err
-	}
-	defer call.Close()
-
-	err = call.CloseSend()
-	if err != nil {
-		return err
-	}
-
-	status := call.Wait()
-	if status == nil {
-		status = &Status{Code: Status_OK}
-	}
-	if expect := Status_PERMISSION_DENIED; status.Code != expect {
-		return fmt.Errorf("wrong status code: expected %v, got %v", expect, status.Code)
-	}
-	if expect := "permission denied for method \"foo.Unexpected\""; status.Text != expect {
-		return fmt.Errorf("wrong status text: expected %q, got %q", expect, status.Text)
-	}
-	return nil
-}
-
-func CaseBogus(ctx context.Context, t *testing.T, cc *ClientConn) error {
-	call, err := cc.Call(ctx, "bar.Bogus")
-	if err != nil {
-		return err
-	}
-	defer call.Close()
-
-	err = call.CloseSend()
-	if err != nil {
-		return err
-	}
-
-	status := call.Wait()
+func CaseMissing(ctx context.Context, t *testing.T, c FooClient) error {
+	status := StatusFromError(c.Missing(ctx))
 	if status == nil {
 		status = &Status{Code: Status_OK}
 	}
 	if expect := Status_UNIMPLEMENTED; status.Code != expect {
 		return fmt.Errorf("wrong status code: expected %v, got %v", expect, status.Code)
 	}
-	if expect := "method \"bar.Bogus\" is not implemented"; status.Text != expect {
+	if expect := fmt.Sprintf("method %q is not implemented", FooServer_Missing); status.Text != expect {
 		return fmt.Errorf("wrong status text: expected %q, got %q", expect, status.Text)
 	}
 	return nil
 }
 
-func HandleAlwaysOK(call *ServerCall) error {
-	return nil
-}
-
-func HandleSum(call *ServerCall) error {
-	var queue []*anypb.Any
-	var done bool
-	for !done {
-		call.WaitRecv(1)
-		queue, done = call.Recv()
-		for _, reqAny := range queue {
-			var req SumRequest
-			if err := UnmarshalFromAny(&req, reqAny); err != nil {
-				return err
-			}
-
-			var resp SumResponse
-			for _, i32 := range req.Input {
-				resp.Output += i32
-			}
-
-			_ = call.SendMessage(&resp)
-		}
+func CaseForbidden(ctx context.Context, t *testing.T, c FooClient) error {
+	status := StatusFromError(c.Forbidden(ctx))
+	if status == nil {
+		status = &Status{Code: Status_OK}
+	}
+	if expect := Status_PERMISSION_DENIED; status.Code != expect {
+		return fmt.Errorf("wrong status code: expected %v, got %v", expect, status.Code)
+	}
+	if expect := fmt.Sprintf("permission denied for method %q", FooServer_Forbidden); status.Text != expect {
+		return fmt.Errorf("wrong status text: expected %q, got %q", expect, status.Text)
 	}
 	return nil
-}
-
-func HandleForbidden(call *ServerCall) error {
-	method := call.Method()
-	return StatusError{
-		Status: &Status{
-			Code: Status_PERMISSION_DENIED,
-			Text: fmt.Sprintf("permission denied for method %q", method),
-		},
-	}
-}
-
-func HandleNoSuchMethod(call *ServerCall) error {
-	method := call.Method()
-	return NoSuchMethodError{Method: method}
 }
 
 func NewTestMux() *HandlerMux {
+	var h1 Handler = FooHandler{Impl: FooServerImpl{}}
+	var h2 Handler = ForbiddenHandler{}
 	mux := &HandlerMux{}
-	mux.AddFunc(HandleAlwaysOK, "foo.AlwaysOK")
-	mux.AddFunc(HandleSum, "foo.Sum")
-	mux.AddFunc(HandleForbidden, "foo.*")
-	mux.AddFunc(HandleNoSuchMethod, "*")
+	mux.Add(h1, "foo.*")
+	mux.Add(h2, "bar.*")
 	return mux
 }
 
@@ -267,7 +316,7 @@ func ContextFromTest(t *testing.T) (ctx context.Context, cancel context.CancelFu
 	return
 }
 
-func Run(ctx context.Context, t *testing.T, cc *ClientConn, cases []Case) {
+func Run(ctx context.Context, t *testing.T, c FooClient, cases []Case) {
 	for _, tc := range cases {
 		t.Run(tc.Name, func(t *testing.T) {
 			ctxInner := ctx
@@ -277,7 +326,7 @@ func Run(ctx context.Context, t *testing.T, cc *ClientConn, cases []Case) {
 				ctxInner = dctx
 			}
 
-			if err := tc.Func(ctxInner, t, cc); err != nil {
+			if err := tc.Func(ctxInner, t, c); err != nil {
 				t.Error(err.Error())
 			}
 		})
@@ -293,13 +342,12 @@ func TestUnixPacket(t *testing.T) {
 		panic(err)
 	}
 
-	var pd NetworkPacketDialer
+	var pd UnixPacketDialer
 
 	pl, err := pd.ListenPacket(ctx, addr)
 	if err != nil {
 		panic(err)
 	}
-	addr = pl.Addr().(*net.UnixAddr)
 
 	s := NewServer(pl, NewTestMux())
 	defer s.Close()
@@ -307,11 +355,12 @@ func TestUnixPacket(t *testing.T) {
 	c := NewClient(&pd)
 	defer c.Close()
 
-	cc, err := c.Dial(ctx, addr)
+	addr = s.Addr().(*net.UnixAddr)
+	conn, err := c.Dial(ctx, addr)
 	if err != nil {
 		panic(err)
 	}
-	defer cc.Close()
+	defer conn.Close()
 
-	Run(ctx, t, cc, Cases)
+	Run(ctx, t, FooClientImpl{Conn: conn}, Cases)
 }

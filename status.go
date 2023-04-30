@@ -37,6 +37,7 @@ func (status *Status) FromError(err error) {
 	status.Reset()
 
 	if err == nil {
+		status.Code = Status_OK
 		return
 	}
 
