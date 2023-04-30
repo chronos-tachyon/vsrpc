@@ -2,6 +2,7 @@ package vsrpc
 
 import (
 	"context"
+	"net"
 	"sync"
 
 	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
@@ -61,6 +62,20 @@ func (conn *Conn) PacketConn() PacketConn {
 		return nil
 	}
 	return conn.pc
+}
+
+func (conn *Conn) LocalAddr() net.Addr {
+	if conn == nil || conn.pc == nil {
+		return nil
+	}
+	return conn.pc.LocalAddr()
+}
+
+func (conn *Conn) RemoteAddr() net.Addr {
+	if conn == nil || conn.pc == nil {
+		return nil
+	}
+	return conn.pc.RemoteAddr()
 }
 
 func (conn *Conn) Begin(ctx context.Context, method Method, options ...Option) (*Call, error) {
