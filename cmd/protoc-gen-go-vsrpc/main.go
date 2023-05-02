@@ -15,7 +15,7 @@ Usage: protoc --go-vsrpc_out=. path/to/service.proto
 `
 
 var (
-	Version    = "(unknown)"
+	Version    = "devel"
 	Commit     = ""
 	CommitDate = ""
 	TreeState  = ""

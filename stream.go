@@ -35,16 +35,20 @@ type BiStream[T proto.Message, U proto.Message] interface {
 	RecvStream[U]
 }
 
+func NewStream[T proto.Message, U proto.Message](call *Call) BiStream[T, U] {
+	return &implStream[T, U]{call: call}
+}
+
 func NewSendStream[T proto.Message](call *Call) SendStream[T] {
-	return &implStream[T, *emptypb.Empty]{call: call}
+	return NewStream[T, *emptypb.Empty](call)
 }
 
 func NewRecvStream[T proto.Message](call *Call) RecvStream[T] {
-	return &implStream[*emptypb.Empty, T]{call: call}
+	return NewStream[*emptypb.Empty, T](call)
 }
 
 func NewBiStream[T proto.Message, U proto.Message](call *Call) BiStream[T, U] {
-	return &implStream[T, U]{call: call}
+	return NewStream[T, U](call)
 }
 
 type implStream[T proto.Message, U proto.Message] struct {
@@ -86,11 +90,12 @@ func (stream implStream[T, U]) Close() error {
 func (stream implStream[T, U]) Send(in T) error {
 	assert.NotNil(&in)
 
-	var out anypb.Any
-	if err := MarshalAny(&out, in); err != nil {
+	var tmp anypb.Any
+	out, err := MarshalAny(&tmp, in)
+	if err != nil {
 		return err
 	}
-	return stream.Call().Send(&out)
+	return stream.Call().Send(out)
 }
 
 func (stream implStream[T, U]) CloseSend() error {

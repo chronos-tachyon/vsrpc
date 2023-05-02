@@ -4,42 +4,31 @@ import (
 	"io/fs"
 )
 
-var ErrClosed = fs.ErrClosed
-
-var ErrClientClosed = fs.ErrClosed
-
-var ErrServerClosed = fs.ErrClosed
-
-var ErrConnClosed = fs.ErrClosed
-
-type ClientClosingError struct{}
-
-func (err ClientClosingError) Error() string {
-	return "connection is closing: client has already sent SHUTDOWN frame"
+type CloseError struct {
+	Type CloseType
 }
 
-var ErrClientClosing error = ClientClosingError{}
-
-type ServerClosingError struct{}
-
-func (err ServerClosingError) Error() string {
-	return "connection is closing: server has already sent GO_AWAY frame"
+func (err CloseError) Error() string {
+	return err.Type.Message()
 }
 
-var ErrServerClosing error = ServerClosingError{}
-
-type HalfClosedError struct{}
-
-func (err HalfClosedError) Error() string {
-	return "RPC call is half-closed: client has already sent HALF_CLOSE or CANCEL frame"
+func (err CloseError) Is(target error) bool {
+	return target == fs.ErrClosed
 }
 
-var ErrHalfClosed error = HalfClosedError{}
+var (
+	_ error       = CloseError{}
+	_ isInterface = CloseError{}
+)
 
-type CallCompleteError struct{}
-
-func (err CallCompleteError) Error() string {
-	return "RPC call has completed: server has already sent END frame"
-}
-
-var ErrCallComplete error = CallCompleteError{}
+var (
+	ErrClientClosing    error = CloseError{Type: CloseType_ClientShutdown}
+	ErrClientClosed     error = CloseError{Type: CloseType_ClientClose}
+	ErrServerClosing    error = CloseError{Type: CloseType_ServerShutdown}
+	ErrServerClosed     error = CloseError{Type: CloseType_ServerClose}
+	ErrConnShuttingDown error = CloseError{Type: CloseType_ConnShutdown}
+	ErrConnGoingAway    error = CloseError{Type: CloseType_ConnGoAway}
+	ErrConnClosed       error = CloseError{Type: CloseType_ConnClose}
+	ErrHalfClosed       error = CloseError{Type: CloseType_CallHalfClose}
+	ErrCallClosed       error = CloseError{Type: CloseType_CallClose}
+)

@@ -25,7 +25,7 @@ type Call struct {
 	mu     sync.Mutex
 	cv     *sync.Cond
 	status *Status
-	state  State
+	state  state
 }
 
 func newCall(
@@ -115,16 +115,16 @@ func (call *Call) Method() Method {
 
 func (call *Call) Send(payload *anypb.Any) error {
 	if call == nil {
-		return ErrCallComplete
+		return ErrCallClosed
 	}
 
 	call.mu.Lock()
 	defer call.mu.Unlock()
 
-	if call.state >= StateClosed {
-		return ErrCallComplete
+	if call.state >= stateClosed {
+		return ErrCallClosed
 	}
-	if call.state >= StateShuttingDown {
+	if call.state >= stateShuttingDown {
 		return ErrHalfClosed
 	}
 
@@ -132,7 +132,7 @@ func (call *Call) Send(payload *anypb.Any) error {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
 
-	if conn.state >= StateClosed {
+	if conn.state >= stateClosed {
 		return call.lockedAbort(ErrConnClosed)
 	}
 	switch call.role {
@@ -156,16 +156,16 @@ func (call *Call) Send(payload *anypb.Any) error {
 
 func (call *Call) CloseSend() error {
 	if call == nil {
-		return ErrCallComplete
+		return ErrCallClosed
 	}
 
 	call.mu.Lock()
 	defer call.mu.Unlock()
 
-	if call.state >= StateClosed {
-		return ErrCallComplete
+	if call.state >= stateClosed {
+		return ErrCallClosed
 	}
-	if call.state >= StateShuttingDown || call.role != ClientRole {
+	if call.state >= stateShuttingDown || call.role != ClientRole {
 		return nil
 	}
 
@@ -173,13 +173,13 @@ func (call *Call) CloseSend() error {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
 
-	if conn.state >= StateClosed {
+	if conn.state >= stateClosed {
 		return call.lockedAbort(ErrConnClosed)
 	}
 	if err := WriteHalfClose(call.ctxOuter, conn.pc, call.id); err != nil {
 		return conn.lockedGotWriteError(err)
 	}
-	call.state = StateShuttingDown
+	call.state = stateShuttingDown
 	onHalfClose(call.observers, call)
 	return nil
 }
@@ -195,10 +195,10 @@ func (call *Call) Cancel() error {
 	call.mu.Lock()
 	defer call.mu.Unlock()
 
-	if call.state >= StateClosed {
-		return ErrCallComplete
+	if call.state >= stateClosed {
+		return ErrCallClosed
 	}
-	if call.state >= StateGoingAway {
+	if call.state >= stateGoingAway {
 		return nil
 	}
 
@@ -206,13 +206,13 @@ func (call *Call) Cancel() error {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
 
-	if conn.state >= StateClosed {
+	if conn.state >= stateClosed {
 		return call.lockedAbort(ErrConnClosed)
 	}
 	if err := WriteCancel(call.ctxOuter, conn.pc, call.id); err != nil {
 		return conn.lockedGotWriteError(err)
 	}
-	call.state = StateGoingAway
+	call.state = stateGoingAway
 	call.cancel()
 	onCancel(call.observers, call)
 	return nil
@@ -229,15 +229,15 @@ func (call *Call) End(status *Status) error {
 	call.mu.Lock()
 	defer call.mu.Unlock()
 
-	if call.state >= StateClosed {
-		return ErrCallComplete
+	if call.state >= stateClosed {
+		return ErrCallClosed
 	}
 
 	conn := call.conn
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
 
-	if conn.state >= StateClosed {
+	if conn.state >= stateClosed {
 		return call.lockedAbort(ErrConnClosed)
 	}
 
@@ -259,7 +259,7 @@ func (call *Call) Wait() *Status {
 	}
 
 	call.mu.Lock()
-	for call.state < StateClosed {
+	for call.state < stateClosed {
 		call.cv.Wait()
 	}
 	status := call.status
@@ -288,7 +288,7 @@ func (call *Call) gotRequest(payload *anypb.Any) error {
 	call.mu.Lock()
 	defer call.mu.Unlock()
 
-	if call.state >= StateShuttingDown {
+	if call.state >= stateShuttingDown {
 		return nil
 	}
 
@@ -305,7 +305,7 @@ func (call *Call) gotResponse(payload *anypb.Any) error {
 	call.mu.Lock()
 	defer call.mu.Unlock()
 
-	if call.state >= StateClosed {
+	if call.state >= stateClosed {
 		return nil
 	}
 
@@ -322,12 +322,12 @@ func (call *Call) gotHalfClose() error {
 	call.mu.Lock()
 	defer call.mu.Unlock()
 
-	if call.state >= StateShuttingDown {
+	if call.state >= stateShuttingDown {
 		return nil
 	}
 
 	call.queue.Done()
-	call.state = StateShuttingDown
+	call.state = stateShuttingDown
 	onHalfClose(call.observers, call)
 	return nil
 }
@@ -340,12 +340,12 @@ func (call *Call) gotCancel() error {
 	call.mu.Lock()
 	defer call.mu.Unlock()
 
-	if call.state >= StateGoingAway {
+	if call.state >= stateGoingAway {
 		return nil
 	}
 
 	call.queue.Done()
-	call.state = StateGoingAway
+	call.state = stateGoingAway
 	call.cancel()
 	onCancel(call.observers, call)
 	return nil
@@ -359,8 +359,8 @@ func (call *Call) gotEnd(status *Status) error {
 	call.mu.Lock()
 	defer call.mu.Unlock()
 
-	if call.state >= StateClosed {
-		return ProtocolViolationError{Err: ErrCallComplete}
+	if call.state >= stateClosed {
+		return ProtocolViolationError{Err: ErrCallClosed}
 	}
 
 	call.lockedEnd(status)
@@ -368,14 +368,14 @@ func (call *Call) gotEnd(status *Status) error {
 }
 
 func (call *Call) lockedAbort(err error) error {
-	if call.state < StateClosed {
+	if call.state < stateClosed {
 		call.lockedEnd(Abort(err))
 	}
 	return err
 }
 
 func (call *Call) lockedEnd(status *Status) {
-	if call.state >= StateClosed {
+	if call.state >= stateClosed {
 		return
 	}
 
@@ -384,7 +384,7 @@ func (call *Call) lockedEnd(status *Status) {
 	}
 
 	call.queue.Done()
-	call.state = StateClosed
+	call.state = stateClosed
 	call.status = status
 	call.cv.Broadcast()
 	call.cancel()

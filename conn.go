@@ -19,7 +19,7 @@ type Conn struct {
 	mu    sync.Mutex
 	calls map[ID]*Call
 	id    ID
-	state State
+	state state
 }
 
 func newConn(role Role, c *Client, s *Server, pc PacketConn, options []Option) *Conn {
@@ -89,14 +89,14 @@ func (conn *Conn) Begin(ctx context.Context, method Method, options ...Option) (
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
 
-	if conn.state >= StateClosed {
+	if conn.state >= stateClosed {
 		return nil, ErrConnClosed
 	}
-	if conn.state >= StateGoingAway {
-		return nil, ErrServerClosing
+	if conn.state >= stateGoingAway {
+		return nil, ErrConnGoingAway
 	}
-	if conn.state >= StateShuttingDown {
-		return nil, ErrClientClosing
+	if conn.state >= stateShuttingDown {
+		return nil, ErrConnShuttingDown
 	}
 
 	id := conn.id
@@ -134,13 +134,13 @@ func (conn *Conn) Shutdown(ctx context.Context) error {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
 
-	if conn.state >= StateClosed {
+	if conn.state >= stateClosed {
 		return ErrConnClosed
 	}
 
 	switch conn.role {
 	case ClientRole:
-		if conn.state >= StateShuttingDown {
+		if conn.state >= stateShuttingDown {
 			return nil
 		}
 
@@ -151,11 +151,11 @@ func (conn *Conn) Shutdown(ctx context.Context) error {
 			return conn.lockedGotWriteError(err)
 		}
 
-		conn.state = StateShuttingDown
+		conn.state = stateShuttingDown
 		onShutdown(conn.observers, conn)
 
 	case ServerRole:
-		if conn.state >= StateGoingAway {
+		if conn.state >= stateGoingAway {
 			return nil
 		}
 
@@ -166,7 +166,7 @@ func (conn *Conn) Shutdown(ctx context.Context) error {
 			return conn.lockedGotWriteError(err)
 		}
 
-		conn.state = StateGoingAway
+		conn.state = stateGoingAway
 		onGoAway(conn.observers, conn)
 
 	default:
@@ -264,8 +264,8 @@ func (conn *Conn) gotShutdown() error {
 
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
-	if conn.state < StateShuttingDown {
-		conn.state = StateShuttingDown
+	if conn.state < stateShuttingDown {
+		conn.state = stateShuttingDown
 		onShutdown(conn.observers, conn)
 	}
 	return nil
@@ -278,8 +278,8 @@ func (conn *Conn) gotGoAway() error {
 
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
-	if conn.state < StateGoingAway {
-		conn.state = StateGoingAway
+	if conn.state < stateGoingAway {
+		conn.state = stateGoingAway
 		onGoAway(conn.observers, conn)
 	}
 	return nil
@@ -302,7 +302,7 @@ func (conn *Conn) gotBegin(ctx context.Context, id ID, method Method, deadline *
 	if call := conn.calls[id]; call != nil {
 		return ProtocolViolationError{Err: DuplicateCallError{ID: id, Old: call.method, New: method}}
 	}
-	if conn.state >= StateShuttingDown {
+	if conn.state >= stateShuttingDown {
 		return nil
 	}
 
@@ -329,7 +329,7 @@ func (conn *Conn) gotReadError(err error) {
 }
 
 func (conn *Conn) lockedGotReadError(err error) {
-	if err == nil || conn.state >= StateClosed {
+	if err == nil || conn.state >= stateClosed {
 		return
 	}
 	onReadError(conn.observers, conn, err)
@@ -339,7 +339,7 @@ func (conn *Conn) lockedGotReadError(err error) {
 }
 
 func (conn *Conn) lockedGotWriteError(err error) error {
-	if err == nil || conn.state >= StateClosed {
+	if err == nil || conn.state >= stateClosed {
 		return err
 	}
 	onWriteError(conn.observers, conn, err)
@@ -350,12 +350,12 @@ func (conn *Conn) lockedGotWriteError(err error) error {
 }
 
 func (conn *Conn) lockedClose() error {
-	if conn.state >= StateClosed {
+	if conn.state >= stateClosed {
 		return ErrConnClosed
 	}
 
 	err := try(conn.pc.Close)
-	conn.state = StateClosed
+	conn.state = stateClosed
 	for _, call := range conn.calls {
 		call.gotEnd(Abort(ErrConnClosed))
 	}

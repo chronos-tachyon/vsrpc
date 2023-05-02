@@ -5,37 +5,18 @@ import (
 
 	"github.com/chronos-tachyon/assert"
 	"google.golang.org/protobuf/proto"
-	anypb "google.golang.org/protobuf/types/known/anypb"
-	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
+	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/types/known/anypb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 type ID uint32
 
 type Method string
 
-func MessageType(msg proto.Message) string {
+func MessageType(msg proto.Message) protoreflect.FullName {
 	assert.NotNil(&msg)
-	return string(msg.ProtoReflect().Descriptor().FullName())
-}
-
-func UnmarshalFromBytes(out proto.Message, raw []byte) error {
-	assert.NotNil(&out)
-	if err := proto.Unmarshal(raw, out); err != nil {
-		typeName := MessageType(out)
-		return UnmarshalError{Type: typeName, Err: err}
-	}
-	return nil
-}
-
-func UnmarshalFromAny(out proto.Message, in *anypb.Any) error {
-	assert.NotNil(&out)
-	assert.NotNil(&in)
-
-	if err := in.UnmarshalTo(out); err != nil {
-		typeName := MessageType(out)
-		return UnmarshalError{Type: typeName, Err: err}
-	}
-	return nil
+	return msg.ProtoReflect().Descriptor().FullName()
 }
 
 type PacketReader interface {
@@ -46,18 +27,18 @@ func ReadFrame(ctx context.Context, r PacketReader, frame *Frame) error {
 	assert.NotNil(&ctx)
 	assert.NotNil(&r)
 	assert.NotNil(&frame)
-
 	frame.Reset()
+
 	raw, dispose, err := r.ReadPacket(ctx)
 	if err != nil {
 		return err
 	}
 	defer dispose()
 
-	err = UnmarshalFromBytes(frame, raw)
+	err = proto.Unmarshal(raw, frame)
 	if err != nil {
-		frame.Reset()
-		return err
+		frameType := MessageType(frame)
+		return UnmarshalError{Type: frameType, Err: err}
 	}
 	return nil
 }

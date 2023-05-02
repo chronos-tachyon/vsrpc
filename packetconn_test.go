@@ -48,7 +48,7 @@ func (c FooClientImpl) Sum(ctx context.Context, fn func(stream BiStream[*SumRequ
 	}
 	defer func() { _ = call.Close() }()
 
-	stream := NewBiStream[*SumRequest, *SumResponse](call)
+	stream := NewStream[*SumRequest, *SumResponse](call)
 	err = fn(stream)
 	if err != nil {
 		return err
@@ -118,7 +118,7 @@ func (h FooHandler) Handle(call *Call) error {
 		}
 
 	case FooServer_Sum:
-		stream := NewBiStream[*SumResponse, *SumRequest](call)
+		stream := NewStream[*SumResponse, *SumRequest](call)
 		if err := h.Impl.Sum(ctx, stream); err != nil {
 			return err
 		}
@@ -333,7 +333,7 @@ func Run(ctx context.Context, t *testing.T, c FooClient, cases []Case) {
 	}
 }
 
-func TestUnixPacket(t *testing.T) {
+func TestUnix(t *testing.T) {
 	ctx, cancel := ContextFromTest(t)
 	defer cancel()
 
@@ -342,7 +342,7 @@ func TestUnixPacket(t *testing.T) {
 		panic(err)
 	}
 
-	var pd UnixPacketDialer
+	var pd UnixDialer
 
 	pl, err := pd.ListenPacket(ctx, addr)
 	if err != nil {

@@ -1,22 +1,5 @@
 package vsrpc
 
-import "errors"
-
-type isRecoverableInterface interface {
-	error
-	IsRecoverable() bool
-}
-
-func IsRecoverable(err error) bool {
-	for err != nil {
-		if xerr, ok := err.(isRecoverableInterface); ok {
-			return xerr.IsRecoverable()
-		}
-		err = errors.Unwrap(err)
-	}
-	return false
-}
-
 type RecoverableError struct {
 	Err error
 }

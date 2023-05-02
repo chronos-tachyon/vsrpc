@@ -14,9 +14,10 @@ type Client struct {
 	observers []Observer
 	pd        PacketDialer
 
-	mu    sync.Mutex
-	conns map[*Conn]void
-	state State
+	mu       sync.Mutex
+	connSet  map[*Conn]void
+	connList []*Conn
+	state    state
 }
 
 func NewClient(pd PacketDialer, options ...Option) *Client {
@@ -46,11 +47,11 @@ func (c *Client) Dial(ctx context.Context, addr net.Addr, options ...Option) (*C
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if c.state >= StateClosed {
+	if c.state >= stateClosed {
 		return nil, ErrClientClosed
 	}
 
-	if c.state >= StateShuttingDown {
+	if c.state >= stateShuttingDown {
 		return nil, ErrClientClosing
 	}
 
@@ -81,15 +82,39 @@ func (c *Client) DialExisting(pc PacketConn, options ...Option) (*Conn, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if c.state >= StateClosed {
+	if c.state >= stateClosed {
 		return nil, ErrClientClosed
 	}
 
-	if c.state >= StateShuttingDown {
+	if c.state >= stateShuttingDown {
 		return nil, ErrClientClosing
 	}
 
 	return c.lockedDial(pc, options)
+}
+
+func (c *Client) Pick(ctx context.Context, picker Picker) (*Conn, error) {
+	assert.NotNil(&ctx)
+	assert.NotNil(&picker)
+
+	if c == nil {
+		return nil, ErrClientClosed
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.state >= stateClosed {
+		return nil, ErrClientClosed
+	}
+
+	if c.state >= stateShuttingDown {
+		return nil, ErrClientClosing
+	}
+
+	tmp := make([]*Conn, len(c.connList))
+	copy(tmp, c.connList)
+	return picker.Pick(ctx, tmp)
 }
 
 func (c *Client) Shutdown(ctx context.Context) error {
@@ -102,18 +127,18 @@ func (c *Client) Shutdown(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if c.state >= StateClosed {
+	if c.state >= stateClosed {
 		return ErrClientClosed
 	}
 
-	if c.state >= StateShuttingDown {
+	if c.state >= stateShuttingDown {
 		return nil
 	}
 
 	onGlobalShutdown(c.observers)
 
-	c.state = StateShuttingDown
-	for conn := range c.conns {
+	c.state = stateShuttingDown
+	for _, conn := range c.connList {
 		_ = conn.Shutdown(ctx)
 	}
 	return nil
@@ -127,17 +152,18 @@ func (c *Client) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if c.state >= StateClosed {
+	if c.state >= stateClosed {
 		return ErrClientClosed
 	}
 
 	onGlobalClose(c.observers)
 
-	c.state = StateClosed
-	for conn := range c.conns {
+	c.state = stateClosed
+	for _, conn := range c.connList {
 		_ = conn.Close()
 	}
-	c.conns = nil
+	c.connSet = nil
+	c.connList = nil
 	return nil
 }
 
@@ -147,19 +173,39 @@ func (c *Client) forgetConn(conn *Conn) {
 	}
 
 	c.mu.Lock()
-	if c.conns != nil {
-		delete(c.conns, conn)
+	defer c.mu.Unlock()
+
+	if _, found := c.connSet[conn]; !found {
+		return
 	}
-	c.mu.Unlock()
+
+	delete(c.connSet, conn)
+
+	n := uint(len(c.connList))
+	i := uint(0)
+	j := uint(0)
+	for i < n {
+		item := c.connList[i]
+		c.connList[i] = nil
+		i++
+
+		if item != conn {
+			c.connList[j] = item
+			j++
+		}
+	}
+	c.connList = c.connList[:j]
 }
 
 func (c *Client) lockedDial(pc PacketConn, options []Option) (*Conn, error) {
 	options = ConcatOptions(c.options, options...)
 	conn := newConn(ClientRole, c, nil, pc, options)
-	if c.conns == nil {
-		c.conns = make(map[*Conn]void, 16)
+	if c.connSet == nil {
+		c.connList = make([]*Conn, 0, 16)
+		c.connSet = make(map[*Conn]void, 16)
 	}
-	c.conns[conn] = void{}
+	c.connList = append(c.connList, conn)
+	c.connSet[conn] = void{}
 	onDial(c.observers, conn)
 	conn.start()
 	return conn, nil

@@ -85,7 +85,7 @@ func (mux *HandlerMux) Find(method Method, inexact bool) Handler {
 	mux.mu.Lock()
 	h := mux.db[method]
 	for inexact && h == nil {
-		i := strings.LastIndex(string(method), ".")
+		i := strings.LastIndexByte(string(method), '.')
 		if i < 0 {
 			break
 		}

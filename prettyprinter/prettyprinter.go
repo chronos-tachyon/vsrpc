@@ -5,6 +5,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/known/anypb"
 )
 
@@ -12,44 +13,68 @@ type PrettyPrinter interface {
 	PrettyPrintTo(buf []byte, detail *anypb.Any) []byte
 }
 
-type Registry struct {
-	mu sync.Mutex
-	db map[string]PrettyPrinter
+type NoOp struct{}
+
+func (NoOp) PrettyPrintTo(buf []byte, detail *anypb.Any) []byte {
+	return buf
 }
 
-func (reg *Registry) Add(typeURL string, pp PrettyPrinter) {
-	if reg == nil || pp == nil {
+var _ PrettyPrinter = NoOp{}
+
+type Registry struct {
+	mu sync.Mutex
+	db map[protoreflect.FullName]PrettyPrinter
+}
+
+func (reg *Registry) Add(fullName protoreflect.FullName, pp PrettyPrinter) {
+	if reg == nil {
 		return
+	}
+	if pp == nil {
+		pp = NoOp{}
 	}
 
 	reg.mu.Lock()
 	if reg.db == nil {
-		reg.db = make(map[string]PrettyPrinter, 16)
+		reg.db = make(map[protoreflect.FullName]PrettyPrinter, 16)
 	}
-	reg.db[typeURL] = pp
+	reg.db[fullName] = pp
 	reg.mu.Unlock()
 }
 
-func (reg *Registry) Remove(typeURL string) {
+func (reg *Registry) Remove(fullName protoreflect.FullName) {
 	if reg == nil {
 		return
 	}
 
 	reg.mu.Lock()
 	if reg.db != nil {
-		delete(reg.db, typeURL)
+		delete(reg.db, fullName)
 	}
 	reg.mu.Unlock()
 }
 
-func (reg *Registry) Find(typeURL string) PrettyPrinter {
-	if reg == nil {
-		return nil
+func (reg *Registry) Find(fullName protoreflect.FullName, inexact bool) PrettyPrinter {
+	var pp PrettyPrinter
+	if reg != nil {
+		reg.mu.Lock()
+		pp = reg.db[fullName]
+		for inexact && pp == nil {
+			i := strings.LastIndexByte(string(fullName), '.')
+			if i < 0 {
+				break
+			}
+			fullName = fullName[:i]
+			pp = reg.db[fullName+".*"]
+		}
+		if inexact && pp == nil {
+			pp = reg.db["*"]
+		}
+		reg.mu.Unlock()
 	}
-
-	reg.mu.Lock()
-	pp := reg.db[typeURL]
-	reg.mu.Unlock()
+	if pp == nil {
+		pp = NoOp{}
+	}
 	return pp
 }
 
@@ -57,22 +82,8 @@ func (reg *Registry) PrettyPrintTo(buf []byte, detail *anypb.Any) []byte {
 	if detail == nil {
 		return buf
 	}
-
-	url := detail.TypeUrl
-	pp := reg.Find(url)
-	if pp == nil {
-		if i := strings.LastIndex(url, "/"); i >= 0 {
-			url = url[:i] + "/*"
-			pp = reg.Find(url)
-		}
-	}
-	if pp == nil {
-		pp = reg.Find("*")
-	}
-	if pp == nil {
-		return buf
-	}
-	return pp.PrettyPrintTo(buf, detail)
+	fullName := detail.MessageName()
+	return reg.Find(fullName, true).PrettyPrintTo(buf, detail)
 }
 
 var _ PrettyPrinter = (*Registry)(nil)
@@ -80,8 +91,5 @@ var _ PrettyPrinter = (*Registry)(nil)
 var GlobalRegistry atomic.Pointer[Registry]
 
 func PrettyPrintTo(buf []byte, detail *anypb.Any) []byte {
-	if detail == nil {
-		return buf
-	}
 	return GlobalRegistry.Load().PrettyPrintTo(buf, detail)
 }

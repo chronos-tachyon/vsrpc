@@ -14,9 +14,9 @@ type Server struct {
 	pl        PacketListener
 	h         Handler
 
-	mu    sync.Mutex
-	conns map[*Conn]void
-	state State
+	mu      sync.Mutex
+	connSet map[*Conn]void
+	state   state
 }
 
 func NewServer(pl PacketListener, h Handler, options ...Option) *Server {
@@ -60,21 +60,46 @@ func (s *Server) Handler() Handler {
 	return s.h
 }
 
-func (s *Server) Shutdown(ctx context.Context) error {
-	assert.NotNil(&ctx)
+func (s *Server) AcceptExisting(pc PacketConn, options ...Option) error {
+	assert.NotNil(&pc)
 
 	if s == nil {
-		return ErrClosed
+		return ErrServerClosed
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.state >= StateClosed {
-		return ErrClosed
+	if s.state >= stateClosed {
+		return pc.Close()
 	}
 
-	if s.state >= StateShuttingDown {
+	options = ConcatOptions(s.options, options...)
+	conn := newConn(ServerRole, nil, s, pc, options)
+	if s.connSet == nil {
+		s.connSet = make(map[*Conn]void, 16)
+	}
+	s.connSet[conn] = void{}
+	onAccept(s.observers, conn)
+	conn.start()
+	return nil
+}
+
+func (s *Server) Shutdown(ctx context.Context) error {
+	assert.NotNil(&ctx)
+
+	if s == nil {
+		return ErrServerClosed
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.state >= stateClosed {
+		return ErrServerClosed
+	}
+
+	if s.state >= stateShuttingDown {
 		return nil
 	}
 
@@ -85,8 +110,8 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		err = try(s.pl.Close)
 	}
 
-	s.state = StateShuttingDown
-	for conn := range s.conns {
+	s.state = stateShuttingDown
+	for conn := range s.connSet {
 		_ = conn.Shutdown(ctx)
 	}
 	return err
@@ -94,28 +119,28 @@ func (s *Server) Shutdown(ctx context.Context) error {
 
 func (s *Server) Close() error {
 	if s == nil {
-		return ErrClosed
+		return ErrServerClosed
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.state >= StateClosed {
-		return ErrClosed
+	if s.state >= stateClosed {
+		return ErrServerClosed
 	}
 
 	onGlobalClose(s.observers)
 
 	var err error
-	if s.pl != nil && s.state < StateShuttingDown {
+	if s.pl != nil && s.state < stateShuttingDown {
 		err = try(s.pl.Close)
 	}
 
-	s.state = StateClosed
-	for conn := range s.conns {
+	s.state = stateClosed
+	for conn := range s.connSet {
 		_ = conn.Close()
 	}
-	s.conns = nil
+	s.connSet = nil
 	return err
 }
 
@@ -125,8 +150,8 @@ func (s *Server) forgetConn(conn *Conn) {
 	}
 
 	s.mu.Lock()
-	if s.conns != nil {
-		delete(s.conns, conn)
+	if s.connSet != nil {
+		delete(s.connSet, conn)
 	}
 	s.mu.Unlock()
 }
@@ -148,16 +173,16 @@ func (s *Server) dispatch(pc PacketConn, err error) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.state >= StateClosed {
+	if s.state >= stateClosed {
 		_ = try(pc.Close)
 		return false
 	}
 
 	conn := newConn(ServerRole, nil, s, pc, s.options)
-	if s.conns == nil {
-		s.conns = make(map[*Conn]void, 16)
+	if s.connSet == nil {
+		s.connSet = make(map[*Conn]void, 16)
 	}
-	s.conns[conn] = void{}
+	s.connSet[conn] = void{}
 	onAccept(s.observers, conn)
 	conn.start()
 	return true
